@@ -31,7 +31,7 @@ const autocompleteCSS = `
         position: absolute;
         z-index: 999;
         max-width: calc(100% - 1.5rem);
-        margin: 5px 0 0 0;
+        flex-direction: column; /* Ensure children stack vertically */
     }
     .autocompleteResults {
         background-color: var(--results-bg) !important;
@@ -44,6 +44,7 @@ const autocompleteCSS = `
         overflow-y: var(--results-overflow-y);
         overflow-x: hidden;
         word-break: break-word;
+        margin-top: 10px; /* Margin to create space below the cursor */
     }
     .sideInfo {
         display: none;
@@ -88,6 +89,10 @@ const autocompleteCSS = `
     }
     .acMetaText.biased::before {
         content: "✨";
+        margin-right: 2px;
+    }
+    .acMetaText span.used::after {
+        content: "🔁";
         margin-right: 2px;
     }
     .acWikiLink {
@@ -358,10 +363,12 @@ function showResults(textArea) {
     parentDiv.style.display = "flex";
 
     if (TAC_CFG.slidingPopup) {
-        let caretPosition = getCaretCoordinates(textArea, textArea.selectionEnd).left;
-        let offset = Math.min(textArea.offsetLeft - textArea.scrollLeft + caretPosition, textArea.offsetWidth - parentDiv.offsetWidth);
+        let caretPosition = getCaretCoordinates(textArea, textArea.selectionEnd);
+        let offsetTop = textArea.offsetTop + caretPosition.top - textArea.scrollTop + 10; // Adjust this value for desired distance below cursor
+        let offsetLeft = Math.min(textArea.offsetLeft - textArea.scrollLeft + caretPosition.left, textArea.offsetWidth - parentDiv.offsetWidth);
 
-        parentDiv.style.left = `${offset}px`;
+        parentDiv.style.top = `${offsetTop}px`; // Position below the cursor
+        parentDiv.style.left = `${offsetLeft}px`;
     } else {
         if (parentDiv.style.left)
             parentDiv.style.removeProperty("left");
@@ -626,12 +633,30 @@ async function insertTextAtCursor(textArea, result, tagword, tabCompletedWithout
     updateInput(textArea);
 
     // Update previous tags with the edited prompt to prevent re-searching the same term
-    let weightedTags = [...newPrompt.matchAll(WEIGHT_REGEX)]
-            .map(match => match[1]);
-    let tags = newPrompt.match(TAG_REGEX())
-    if (weightedTags !== null) {
-        tags = tags.filter(tag => !weightedTags.some(weighted => tag.includes(weighted)))
-            .concat(weightedTags);
+    let weightedTags = [...prompt.matchAll(WEIGHT_REGEX)]
+        .map(match => match[1])
+        .sort((a, b) => a.length - b.length);
+    let tags = [...prompt.match(TAG_REGEX())].sort((a, b) => a.length - b.length);
+    
+    if (weightedTags !== null && tags !== null) {
+        // Create a working copy of the normal tags
+        let workingTags = [...tags];
+        
+        // For each weighted tag
+        for (const weightedTag of weightedTags) {
+            // Find first matching tag and remove it from working set
+            const matchIndex = workingTags.findIndex(tag => 
+                tag === weightedTag && !tag.startsWith("<[") && !tag.startsWith("$(")
+            );
+            
+            if (matchIndex !== -1) {
+                // Remove the matched tag from the working set
+                workingTags.splice(matchIndex, 1);
+            }
+        }
+        
+        // Combine filtered normal tags with weighted tags
+        tags = workingTags.concat(weightedTags);
     }
     previousTags = tags;
 
@@ -666,6 +691,30 @@ function addResultsToList(textArea, results, tagword, resetList) {
     let tagColors = TAC_CFG.colorMap;
     let mode = (document.querySelector(".dark") || gradioApp().querySelector(".dark")) ? 0 : 1;
     let nextLength = Math.min(results.length, resultCount + TAC_CFG.resultStepLength);
+    const IS_DAN_OR_E621_TAG_FILE =  (tagFileName.toLowerCase().startsWith("danbooru") || tagFileName.toLowerCase().startsWith("e621"));
+
+    const tagCount = {};
+
+    // Indicate if tag was used before 
+    if (IS_DAN_OR_E621_TAG_FILE) {
+        const prompt = textArea.value.trim();
+        const tags = prompt.replaceAll('\n', ',').split(',').map(tag => tag.trim()).filter(tag => tag);
+
+        const unsanitizedTags = tags.map(tag => {
+            const weightedTags = [...tag.matchAll(WEIGHT_REGEX)].flat();
+            if (weightedTags.length === 2) {
+                return weightedTags[1];
+            } else {
+                // normal tags
+                return tag;
+            }
+        }).map(tag => tag.replaceAll(" ", "_").replaceAll("\\(", "(").replaceAll("\\)", ")"));
+    
+        // Split tags by `,`  and count tag 
+        for (const tag of unsanitizedTags) {
+            tagCount[tag] = tagCount[tag] ? tagCount[tag] + 1 : 1;
+        }
+    }
 
     for (let i = resultCount; i < nextLength; i++) {
         let result = results[i];
@@ -731,29 +780,38 @@ function addResultsToList(textArea, results, tagword, resetList) {
         }
 
         // Add wiki link if the setting is enabled and a supported tag set loaded
-        if (TAC_CFG.showWikiLinks
-            && (result.type === ResultType.tag)
-            && (tagFileName.toLowerCase().startsWith("danbooru") || tagFileName.toLowerCase().startsWith("e621"))) {
+        if (
+            TAC_CFG.showWikiLinks &&
+            result.type === ResultType.tag &&
+            IS_DAN_OR_E621_TAG_FILE
+        ) {
             let wikiLink = document.createElement("a");
             wikiLink.classList.add("acWikiLink");
             wikiLink.innerText = "?";
-            wikiLink.title = "Open external wiki page for this tag"
+            wikiLink.title = "Open external wiki page for this tag";
 
             let linkPart = displayText;
             // Only use alias result if it is one
-            if (displayText.includes("➝"))
-                linkPart = displayText.split(" ➝ ")[1];
+            if (displayText.includes("➝")) linkPart = displayText.split(" ➝ ")[1];
 
             // Remove any trailing translations
             if (linkPart.includes("[")) {
-                linkPart = linkPart.split("[")[0]
+                linkPart = linkPart.split("[")[0];
             }
 
             linkPart = encodeURIComponent(linkPart);
 
             // Set link based on selected file
             let tagFileNameLower = tagFileName.toLowerCase();
-            if (tagFileNameLower.startsWith("danbooru")) {
+            if (tagFileNameLower.startsWith("danbooru_e621_merged")) {
+                // Use danbooru for categories 0-5, e621 for 6+
+                // Based on the merged categories from https://github.com/DraconicDragon/dbr-e621-lists-archive/tree/main/tag-lists/danbooru_e621_merged
+                // Danbooru is also the fallback if result.category is not set
+                wikiLink.href =
+                    result.category && result.category >= 6
+                        ? `https://e621.net/wiki_pages/${linkPart}`
+                        : `https://danbooru.donmai.us/wiki_pages/${linkPart}`;
+            } else if (tagFileNameLower.startsWith("danbooru")) {
                 wikiLink.href = `https://danbooru.donmai.us/wiki_pages/${linkPart}`;
             } else if (tagFileNameLower.startsWith("e621")) {
                 wikiLink.href = `https://e621.net/wiki_pages/${linkPart}`;
@@ -818,7 +876,19 @@ function addResultsToList(textArea, results, tagword, resetList) {
         // Add small ✨ marker to indicate usage sorting
         if (result.usageBias) {
             flexDiv.querySelector(".acMetaText").classList.add("biased");
-            flexDiv.title = "✨ Frequent tag. Ctrl/Cmd + click to reset usage count."
+            flexDiv.title = "✨ Frequent tag. Ctrl/Cmd + click to reset usage count.";
+        }
+
+        // Add 🔁 to indicate if tag was used before
+        if (IS_DAN_OR_E621_TAG_FILE && tagCount[result.text]) {
+            // Fix PR#313#issuecomment-2592551794
+            if (!(result.text === tagword && tagCount[result.text] === 1)) {
+                const textNode = flexDiv.querySelector(".acMetaText");
+                const span = document.createElement("span");
+                textNode.insertBefore(span, textNode.firstChild);
+                span.classList.add("used");
+                span.title = "🔁 The prompt already contains this tag";
+            }
         }
 
         // Check if it's a negative prompt
@@ -1077,11 +1147,29 @@ async function autocomplete(textArea, prompt, fixedTag = null) {
         // Match tags with RegEx to get the last edited one
         // We also match for the weighting format (e.g. "tag:1.0") here, and combine the two to get the full tag word set
         let weightedTags = [...prompt.matchAll(WEIGHT_REGEX)]
-            .map(match => match[1]);
-        let tags = prompt.match(TAG_REGEX())
+            .map(match => match[1])
+            .sort((a, b) => a.length - b.length);
+        let tags = [...prompt.match(TAG_REGEX())].sort((a, b) => a.length - b.length);
+        
         if (weightedTags !== null && tags !== null) {
-            tags = tags.filter(tag => !weightedTags.some(weighted => tag.includes(weighted) && !tag.startsWith("<[") && !tag.startsWith("$(")))
-                .concat(weightedTags);
+            // Create a working copy of the normal tags
+            let workingTags = [...tags];
+            
+            // For each weighted tag
+            for (const weightedTag of weightedTags) {
+                // Find first matching tag and remove it from working set
+                const matchIndex = workingTags.findIndex(tag => 
+                    tag === weightedTag && !tag.startsWith("<[") && !tag.startsWith("$(")
+                );
+                
+                if (matchIndex !== -1) {
+                    // Remove the matched tag from the working set
+                    workingTags.splice(matchIndex, 1);
+                }
+            }
+            
+            // Combine filtered normal tags with weighted tags
+            tags = workingTags.concat(weightedTags);
         }
 
         // Guard for no tags
@@ -1426,6 +1514,12 @@ function addAutocompleteToArea(area) {
             if (!e.inputType && !tacSelfTrigger) return;
             tacSelfTrigger = false;
 
+            // Block hide we are composing (IME), so enter doesn't close the results
+            if (e.isComposing) {
+                hideBlocked = true;
+                setTimeout(() => { hideBlocked = false; }, 100);
+            }
+
             debounce(autocomplete(area, area.value), TAC_CFG.delayTime);
             checkKeywordInsertionUndo(area, e);
         });
@@ -1551,7 +1645,7 @@ async function setup() {
     } else {
         acStyle.appendChild(document.createTextNode(css));
     }
-    gradioApp().appendChild(acStyle);
+    document.head.appendChild(acStyle);
 
     // Callback
     await processQueue(QUEUE_AFTER_SETUP, null);

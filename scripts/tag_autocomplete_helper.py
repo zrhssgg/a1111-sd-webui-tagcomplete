@@ -503,7 +503,14 @@ def write_style_names(*args, **kwargs):
 def write_temp_files(skip_wildcard_refresh = False):
     # Write wildcards to wc.txt if found
     if WILDCARD_PATH.exists() and not skip_wildcard_refresh:
-        wildcards = [WILDCARD_PATH.relative_to(FILE_DIR).as_posix()] + get_wildcards()
+        try:
+            # Attempt to create a relative path, but fall back to an absolute path if not possible
+            relative_wildcard_path = WILDCARD_PATH.relative_to(FILE_DIR).as_posix()
+        except ValueError:
+            # If the paths are not relative, use the absolute path
+            relative_wildcard_path = WILDCARD_PATH.as_posix()
+
+        wildcards = [relative_wildcard_path] + get_wildcards()
         if wildcards:
             write_to_temp_file('wc.txt', wildcards)
 
@@ -515,7 +522,7 @@ def write_temp_files(skip_wildcard_refresh = False):
         # Write yaml extension wildcards to umi_tags.txt and wc_yaml.json if found
         get_yaml_wildcards()
 
-    if HYP_PATH.exists():
+    if HYP_PATH is not None and HYP_PATH.exists():
         hypernets = get_hypernetworks()
         if hypernets:
             write_to_temp_file('hyp.txt', hypernets)
@@ -686,6 +693,23 @@ def on_ui_settings():
         "9": ["#df3647", "#8e1c2b"],
         "10": ["#c98f2b", "#7b470e"],
         "11": ["#e87ebe", "#a83583"]
+    },
+    "danbooru_e621_merged": {
+        "-1": ["red", "maroon"],
+        "0": ["lightblue", "dodgerblue"],
+        "1": ["indianred", "firebrick"],
+        "3": ["violet", "darkorchid"],
+        "4": ["lightgreen", "darkgreen"],
+        "5": ["orange", "darkorange"],
+        "6": ["red", "maroon"],
+        "7": ["lightblue", "dodgerblue"],
+        "8": ["gold", "goldenrod"],
+        "9": ["gold", "goldenrod"],
+        "10": ["violet", "darkorchid"],
+        "11": ["lightgreen", "darkgreen"],
+        "12": ["tomato", "darksalmon"],
+        "14": ["whitesmoke", "black"],
+        "15": ["seagreen", "darkseagreen"]
     }
 }\
 """
@@ -883,5 +907,5 @@ def api_tac(_: gr.Blocks, app: FastAPI):
     @app.get("/tacapi/v1/get-all-use-counts")
     async def get_all_tag_counts():
         return db_request(lambda: db.get_all_tags(), get=True)
-        
+
 script_callbacks.on_app_started(api_tac)
